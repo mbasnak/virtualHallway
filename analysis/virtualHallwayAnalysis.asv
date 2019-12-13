@@ -1,0 +1,194 @@
+%Analysis code for the virtual hallway with reward experiment.
+
+%Things to look at:
+%1)forward velocity around opto trigger for the training trials
+%2)angular velocity around opto trigger for the training trials
+%3)progression of forward velocity across various training trials
+%4)forward and angular velocities close to where the reward would be in
+%test trials.
+%5)trajectories
+%6)duration of trials vs trial number
+%7)heatmaps for velocity with the opto trigger
+%8)difference between training and probes
+
+
+close all; clear all;
+
+% prompt the user to select the file to open and load it.
+cd 'Z:\Wilson Lab\Mel\FlyOnTheBall\data\Experiment16'
+%[file,path] = uigetfile();
+% load([path,file]);
+dirName = uigetdir();
+cd(dirName)
+fileNames = dir('*.mat');
+
+prompt = 'What session would you like to analyse? ';
+sid = input(prompt);
+
+%load data from all trials of a specific session.
+for i = 1:length(fileNames)
+    if regexp(fileNames(i).name,strcat('sid_',num2str(sid))) > 0
+        rawData{i} = load(strcat(fileNames(i).folder,'\',fileNames(i).name));
+    end
+end
+%remove empty cells
+rawData = rawData(~cellfun('isempty',rawData));
+
+% Define Ni-Daq channels ID
+%Prompt the user to ask which room the data was collected in
+list = {'Jenny-2P','Jenny-Behavior','Mel-2P','Mel-Behavior'};
+[indx] = listdlg('ListString',list);
+room = list(indx);
+
+NiDaqChannels = loadSettings(room{1,1}); %load the appropriate NiDaq settings
+
+headingFly = NiDaqChannels.headingFly;
+yFly = NiDaqChannels.yFly;
+xFly = NiDaqChannels.xFly;
+xFlyGain = NiDaqChannels.xFlyGain;
+xPanels = NiDaqChannels.xPanels;
+yPanels = NiDaqChannels.yPanels;
+PanelStatus = NiDaqChannels.PanelStatus;
+OptoTrigger = NiDaqChannels.OptoTrigger;
+
+samplingRate = 4000;
+
+%% Trial length vs trial number
+
+figure,
+subplot(1,2,1)
+for i = 1:length(rawData)
+    trialDur(i) = size(rawData{1,i}.trial_bdata,1);
+end
+
+trialNum = [1:length(rawData)];
+plot(trialNum,trialDur/samplingRate,'ko')
+xlabel('Trial number'); ylabel('Trial duration (s)');
+if probeTrials ~= [];
+    
+    
+
+subplot(1,2,2)
+boxplot(trialDur/4000)
+title('Distribution of trial duration')
+
+
+%% Subset acquisition of x and y pos, as well as FicTrac data
+
+for i = 1:length(rawData)
+    
+    Data = rawData{1,i}.trial_bdata;
+    
+data.xPanelVolts =  Data (:,xPanels); 
+VOLTAGE_RANGE_x = 9.77; % This should be 10 V, but empirically I measure 0.1 V for pos x=1 and 9.87 V for pos x=96
+maxValX =  96 ;% pattern.x_num (I am using 96 for every pattern now, but if it wasn't the case I would need to adjust it)
+
+data.yPanelVolts =  Data (:, yPanels);
+VOLTAGE_RANGE_y = 9.86; %likewise, empirically this should be 10V, but I am getting 9.86
+maxValY = 96;% I think I am using 1 for my Y dimension for every pattern except the 4px grating, which uses 2
+
+%FicTrac data
+data.ficTracAngularPosition = Data ( : , headingFly); 
+data.ficTracIntx = Data ( : , xFly); 
+data.ficTracInty = Data ( : , yFly); 
+
+sizeBall = 9;
+[smoothed{i}] = singleTrialVelocityAnalysis9mm(data,samplingRate);
+
+%alternative method for smoothing
+%something is very weird about the difference in the values that I get
+%using both methods. I need to check this
+[forwardVel{i}, accumulatedx{i}] = ficTracSignalDecoding(data.ficTracIntx, samplingRate , 50, 10);
+
+end
+
+
+for i = 1:length(forwardVel)
+    sizes(i) = length(forwardVel{1,i});
+end
+maxLength = max(sizes);
+
+for i = 1:length(forwardVel)
+    x = [0:length(forwardVel{1,i})-1];
+    x = x';
+    xi = [0:maxLength];
+    xi = xi';
+    interpVel(:,i) = interp1q(x,forwardVel{1,i},xi);
+end
+
+figure,
+imagesc(interpVel')
+colorbar
+
+%downsample instead
+
+for i = 1:length(smoothed)
+    sizes(i) = length(smoothed{1,i}.xVel);   
+end
+minLength = min(sizes);
+
+for i = 1:length(smoothed)
+    downsampled(i,:) = resample(smoothed{1,i}.xVel,minLength,length(smoothed{1,i}.xVel));   
+end
+
+figure,
+imagesc(downsampled)
+colorbar
+
+figure,
+for i = 1:length(smoothed)
+    time = linspace(0,length(smoothed{1,i}.xVel)/samplingRate,length(smoothed{1,i}.xVel));
+    plot(time,smoothed{1,i}.xVel+i+5);
+    hold on
+end
+
+%separating by probe vs non probe
+probeTrials = rawData{1,1}.probeTrials;
+emptyTrials = rawData{1,1}.emptyTrials;
+
+figure,
+for i = 1:length(smoothed)
+    time = linspace(0,length(smoothed{1,i}.xVel)/25,length(smoothed{1,i}.xVel));
+    if any(probeTrials == i)
+        plot(time,smoothed{1,i}.xVel+i+5,'k');
+    elseif any(emptyTrials == i)
+        plot(time,smoothed{1,i}.xVel+i+5,'b');
+    else
+        plot(time,smoothed{1,i}.xVel+i+5,'r');
+    end
+        hold on
+end
+xlabel('Time (s)'); ylabel('Forward velocity (mm/s)');
+
+%% Plot the velocities
+
+figure,
+subplot(2,1,1)
+plot(smoothed.xVel,'k')
+hold on
+downsampledTrigger = downsample(rawData(:,OptoTrigger),samplingRate/25);
+plot(downsampledTrigger,'r')
+ylabel('Forward velocity') ; xlabel('Time');
+
+subplot(2,1,2)
+plot(smoothed.angularVel,'k')
+hold on
+downsampledTrigger = downsample(rawData(:,OptoTrigger),samplingRate/25);
+plot(downsampledTrigger,'r')
+ylabel('Angular velocity') ; xlabel('Time');
+
+
+%% 2D trajectories
+
+%Corrected trajectory: this is the actual trajectory the fly took during
+%the block
+[posx2,posy2]=FlyTrajectory(smoothed.Intx,smoothed.Inty,smoothed.angularPosition);
+time = linspace(1,length(trial_time)/samplingRate,length(posx2));
+
+figure, scatter(posx2,posy2,1,time);
+h2 = colorbar
+title(h2, 'Time (s)')
+axis equal
+axis tight
+title('Corrected 2D trajectory');
+
